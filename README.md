@@ -5,3 +5,4 @@ The script `test_script.py` was updated to scrape for new data for the current w
 - Change to connect to firestore and dump the resulting json there
 - Hang on to the json data from last week, just in case.
 - Adjust for inflation
+- Clean up the code a little bit to make it more readable
