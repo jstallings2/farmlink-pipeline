@@ -15,12 +15,15 @@ def get_current_date():
     today = datetime.now()
     return today.month, today.day, today.year
 
-def update_data(regionname, producename, savedir='./concat_data/'):
+def update_data(regionname, producename, savedir='./concat_data/', test=False):
     """
     Performs the web scrape to grab the newest data for a given region and veggie,
     and combines it with the old data for that region & veggie and returns the
     combined dataframe with data +11 years ago cut off, and also OVERWRITES the backup csv of the old data
     """
+    if test:
+        old_df = load_and_clean(regionname, producename)[0]
+        return old_df
 
     new_df = fetch_data(producename, regionname)[0]
     old_df = load_and_clean(regionname, producename)[0]
@@ -65,17 +68,17 @@ def load_and_clean(region, veg, dir='./concat_data/'):
     filepath = dir + region + "_" + veg + "_ALL.csv"
     try:
         df = pd.read_csv(filepath, parse_dates=True, index_col='Date')
-        return df, True
     except FileNotFoundError:
         print("No data found for {} {}, skipping")
         return None, False
     
-    # Drop null rows
-    # df.drop(df[df.index.isna() == True].index, inplace=True)
-    # print(sum(df.index.isna() == True))
+    #Drop null rows
+    if sum(df.index.isna() == True) > 0:
+        df.drop(df[df.index.isna() == True].index, inplace=True)
     # Drop Unnamed column
-    #df.drop(['Unnamed: 0'], axis=1, inplace=True)
-    #return df, True
+    if 'Unnamed: 0' in df.columns:
+        df.drop(['Unnamed: 0'], axis=1, inplace=True)
+    return df, True
 
 # Create the appropriate timedeltas
 """
@@ -103,7 +106,7 @@ def pct_change(oldprice, newprice):
 
 
 
-def calc_averages(region, veg, df):
+def calc_averages(region, veg, df, adjusted=True):
     """
     Calculate the averages for a given region + veggie, organic, nonorganic, and all, and save 
     as 3 rows in a dataframe (will change to connect to firebase as well)
@@ -127,6 +130,9 @@ def calc_averages(region, veg, df):
     today_df = df.loc[today]
     price_today = np.mean(today_df['Weighted Avg Price'])
     print("Price today: $" + str(round(price_today,2)))
+    if adjusted:
+        adj_price_today = np.mean(today_df['IA Avg Price'])
+        print("Price today (adjusted for inflation): $" + str(round(adj_price_today,2)))
 
     # Calculate 10 yr average
     df_10yr = pd.DataFrame()
@@ -152,10 +158,14 @@ def calc_averages(region, veg, df):
 
     if df_10yr_avg.index[0] > yearsago(10, from_date=today):
         print("Data does not contain a price from 10 yrs ago for {} {}, using the earliest price point within 10 years that can find for pct change calculation".format(veg, region))
+        asterisk = True
     price_10yr_ago = df_10yr_avg.iloc[0]['Weighted Avg Price']
     final_10yr_avg = np.mean(df_10yr_avg['Weighted Avg Price'])
     print(region, veg, "10 yr average: $" + str(round(final_10yr_avg, 2)))
-
+    if adjusted:
+        adj_price_10yr_ago = df_10yr_avg.iloc[0]['IA Avg Price']
+        adj_final_10yr_avg = np.mean(df_10yr_avg['IA Avg Price'])
+        print(region, veg, "adj 10 yr average: $" + str(round(adj_final_10yr_avg, 2)))
     
     # Get data from closest to exactly 3 months ago as possible
     date_back_3mo = monthsago(3, from_date=today)
@@ -175,26 +185,65 @@ def calc_averages(region, veg, df):
     final_1mo_avg = np.mean(df_1mo['Weighted Avg Price'])
     print(region, veg, "3 months ago: $" + str(round(final_3mo_avg, 2)))
     print(region, veg, "1 months ago: $" + str(round(final_1mo_avg, 2)))
+    if adjusted:
+        adj_final_3mo_avg = np.mean(df_3mo['IA Avg Price'])
+        adj_final_1mo_avg = np.mean(df_1mo['IA Avg Price'])
+        print(region, veg, "adj 3 months ago: $" + str(round(adj_final_3mo_avg, 2)))
+        print(region, veg, "adj 1 months ago: $" + str(round(adj_final_1mo_avg, 2)))
 
     # Calculate percent changes
-    pct_change_10yr = pct_change(price_10yr_ago, price_today)
-    pct_change_3mo = pct_change(final_3mo_avg, price_today)
-    pct_change_1mo = pct_change(final_1mo_avg, price_today)
+    if adjusted:
+        pct_change_10yr = pct_change(adj_price_10yr_ago, adj_price_today)
+        pct_change_3mo = pct_change(adj_final_3mo_avg, adj_price_today)
+        pct_change_1mo = pct_change(adj_final_1mo_avg, adj_price_today)
+    else:
+        pct_change_10yr = pct_change(price_10yr_ago, price_today)
+        pct_change_3mo = pct_change(final_3mo_avg, price_today)
+        pct_change_1mo = pct_change(final_1mo_avg, price_today)
 
 
-    new_cols = ['Date Added','Region', 'Commodity', '10yr_avg', '3mo_ago', '1mo_ago', 'pct_change (10yr)', 'pct_change (3mo)', 'pct_change (1mo)', 'price_today', '10_yr asterisk']
-    vals = [current_day.strftime('%Y-%m-%d'), region, veg, final_10yr_avg, final_3mo_avg, final_1mo_avg, pct_change_10yr, pct_change_3mo, pct_change_1mo, price_today, asterisk]
+    new_cols = ['Date Added','Region', 'Commodity', '10yr_avg', '3mo_ago', '1mo_ago', 'pct_change (10yr)', 'pct_change (3mo)', 'pct_change (1mo)', 'price_today', '10_yr asterisk', 'adjusted']
+    if adjusted:
+        vals = [current_day.strftime('%Y-%m-%d'), region, veg, adj_final_10yr_avg, adj_final_3mo_avg, adj_final_1mo_avg, pct_change_10yr, pct_change_3mo, pct_change_1mo, adj_price_today, asterisk, True]
+    else:
+        vals = [current_day.strftime('%Y-%m-%d'), region, veg, adj_final_10yr_avg, adj_final_3mo_avg, adj_final_1mo_avg, pct_change_10yr, pct_change_3mo, pct_change_1mo, adj_price_today, asterisk, True]
     results_dict = dict(zip(new_cols, vals))
     print(results_dict)
     return results_dict
 
+def nearest_date(dates, targdate):
+    # given a pd series of dates and a target date, returns date from the series closest to target date (and distance)
+    for i in dates:
+        i = i.to_pydatetime()
+    nearest = min(dates, key=lambda x: abs(x - targdate))
+    timedelta = abs(nearest - targdate)
+    return nearest, timedelta
+
+def adjust_inflation(data, coeffs):
+    adjusted = data.reset_index().sort_values(by='Date')
+    merged_df = pd.merge_asof(adjusted, coeffs, left_on='Date', right_on='DATE')
+    merged_df["IA Avg Price"] = (merged_df['Weighted Avg Price']/merged_df['CPIAUCNS'])*100
+    merged_df = merged_df.set_index('Date')
+    merged_df = merged_df.sort_index()
+    print('Data with inflation index added:\n', merged_df.head())
+    return merged_df
+
+def load_cpi_data():
+    coeffs = pd.read_csv('./CPI_DATA.csv')
+    coeffs['DATE'] = pd.to_datetime(coeffs['DATE'])
+    coeffs = coeffs.sort_values(by='DATE')
+    coeffs = coeffs.reset_index(drop=True)
+    return coeffs
+
 
 if __name__ == "__main__":
+    coeffs = load_cpi_data()
     for r in test_regions:
         for v in test_producenames:
             results_df = pd.DataFrame()
-            input_df = update_data(r, v)
-            results_df = results_df.append(calc_averages(r, v, input_df), ignore_index=True)
+            input_df = update_data(r, v, test=True)
+            adjusted_df = adjust_inflation(input_df, coeffs)
+            results_df = results_df.append(calc_averages(r, v, adjusted_df,adjusted=True), ignore_index=True)
             print(results_df)
             print(results_df.columns)
             path = JSON_DIR + r + '_'+ v + '.json'
