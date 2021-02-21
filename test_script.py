@@ -1,32 +1,81 @@
 import os
+import requests
 import pandas as pd 
 import numpy as np 
 from datetime import datetime
 from datetime import timedelta
 from dateutil.relativedelta import relativedelta
 
-# TODO: Scrape directly from USDA
-# TODO: Skip the intermediate steps of saving as HTML and csv's
-
 DIR = "./concat_data/"
 JSON_DIR = "./json_data/"
 test_regions = ['NORTHEAST+U.S.', 'SOUTHWEST+U.S.']
 test_producenames = ['CARROTS', 'APPLES']
 
-def load_and_clean(region, veg, dir):
+def get_current_date():
+    today = datetime.now()
+    return today.month, today.day, today.year
+
+def update_data(regionname, producename, savedir='./concat_data/'):
+    """
+    Performs the web scrape to grab the newest data for a given region and veggie,
+    and combines it with the old data for that region & veggie and returns the
+    combined dataframe with data +11 years ago cut off, and also OVERWRITES the backup csv of the old data
+    """
+
+    new_df = fetch_data(producename, regionname)[0]
+    old_df = load_and_clean(regionname, producename)[0]
+    print('Old data:\n', old_df.tail(5))
+    print('New data:\n', new_df.head(5))
+    combined_df = pd.concat([old_df, new_df], ignore_index=False)
+    # Chop off the data more than 11 years prior 11 year data might 
+    # still be needed for 10yr average if the dates dont line up
+    combined_df = combined_df[combined_df.index > yearsago(11)]
+
+    # Save combined_df
+    filepath = savedir + str(regionname) + '_' + str(producename) + '_ALL.csv'
+    combined_df.to_csv(filepath)
+
+    # Return combined_df
+    return combined_df
+
+def fetch_data(producename, regionname):
+    """Given a region and produce item, fetches a year of data and MAKES A DATAFRAME OF IT.
+    Skips any cities/items/year combos that have already been downloaded. Slightly hardened against 
+    timeouts,etc. from the USDA server, which is a bit flaky.
+    """
+    month, day, year = get_current_date()
+
+    url = 'https://www.marketnews.usda.gov/mnp/fv-report-retail?repType=&run=&portal=fv&locChoose=&commodityClass=&startIndex=1&type=retail&class=ALL&commodity='+str(producename)+'&region='+str(regionname)+'&organic=ALL&repDate='+str(month)+'%2F'+str(month)+'%2F'+str(year)+'&endDate=12%2F31%2F'+str(year)+'&compareLy=No&format=excel&rowDisplayMax=100000'
+
+    try:
+        r = requests.get(url, allow_redirects=True, timeout=300)
+        new_data = pd.read_html(r.content, header=0, parse_dates=True, index_col='Date')[0]
+        return new_data, True
+    except requests.exceptions.Timeout:
+        print('request timed out, trying again...')
+        try:
+            r = requests.get(url, allow_redirects=True, timeout=300)
+            new_data = pd.read_html(r.content, header=0, parse_dates=True, index_col='Date')[0]
+            return new_data, True
+        except requests.exceptions.Timeout:
+            print('request timed out again, exiting...')
+            return None, False
+
+def load_and_clean(region, veg, dir='./concat_data/'):
     filepath = dir + region + "_" + veg + "_ALL.csv"
     try:
         df = pd.read_csv(filepath, parse_dates=True, index_col='Date')
+        return df, True
     except FileNotFoundError:
         print("No data found for {} {}, skipping")
         return None, False
     
     # Drop null rows
-    df.drop(df[df.index.isna() == True].index, inplace=True)
-    print(sum(df.index.isna() == True))
+    # df.drop(df[df.index.isna() == True].index, inplace=True)
+    # print(sum(df.index.isna() == True))
     # Drop Unnamed column
-    df.drop(['Unnamed: 0'], axis=1, inplace=True)
-    return df, True
+    #df.drop(['Unnamed: 0'], axis=1, inplace=True)
+    #return df, True
 
 # Create the appropriate timedeltas
 """
@@ -54,23 +103,18 @@ def pct_change(oldprice, newprice):
 
 
 
-def calc_averages(region, veg, df, organic='both'):
+def calc_averages(region, veg, df):
     """
     Calculate the averages for a given region + veggie, organic, nonorganic, and all, and save 
     as 3 rows in a dataframe (will change to connect to firebase as well)
 
     Params:
-        organic:    'only' => only organic
-                    'no' => only non-organic
-                    'both' => all will be calculated (organic status is ignored)
+        region: Region to caculate for
+        veg: Commodity to calculate for
+        df: DataFrame to use for the calculations
 
     Return true on successful execution
     """
-
-    if organic == 'only':
-        df = df[df['Organic'] == 'Y']
-    elif organic == 'no':
-        df = df[df['Organic'].isna()]
 
     # Get the data from today or most recent day with data
     current_day = datetime.today()
@@ -136,16 +180,10 @@ def calc_averages(region, veg, df, organic='both'):
     pct_change_10yr = pct_change(price_10yr_ago, price_today)
     pct_change_3mo = pct_change(final_3mo_avg, price_today)
     pct_change_1mo = pct_change(final_1mo_avg, price_today)
-    if organic == 'only':
-        org_str = 'Y'
-    elif organic == 'no':
-        org_str = 'N'
-    else:
-        org_str = 'B'
 
 
-    new_cols = ['Date Added','Region', 'Commodity', 'Organic', '10yr_avg', '3mo_ago', '1mo_ago', 'pct_change (10yr)', 'pct_change (3mo)', 'pct_change (1mo)', 'price_today', '10_yr asterisk']
-    vals = [current_day.strftime('%Y-%m-%d'), region, veg, org_str, final_10yr_avg, final_3mo_avg, final_1mo_avg, pct_change_10yr, pct_change_3mo, pct_change_1mo, price_today, asterisk]
+    new_cols = ['Date Added','Region', 'Commodity', '10yr_avg', '3mo_ago', '1mo_ago', 'pct_change (10yr)', 'pct_change (3mo)', 'pct_change (1mo)', 'price_today', '10_yr asterisk']
+    vals = [current_day.strftime('%Y-%m-%d'), region, veg, final_10yr_avg, final_3mo_avg, final_1mo_avg, pct_change_10yr, pct_change_3mo, pct_change_1mo, price_today, asterisk]
     results_dict = dict(zip(new_cols, vals))
     print(results_dict)
     return results_dict
@@ -155,18 +193,10 @@ if __name__ == "__main__":
     for r in test_regions:
         for v in test_producenames:
             results_df = pd.DataFrame()
-            input_df, status = load_and_clean(r, v, DIR)
-            if not status:
-                print("An error occured when loading data for: {} {}".format(r, v))
-            else:
-                both = calc_averages(r, v, input_df, organic='both')
-                results_df = results_df.append(both, ignore_index=True)
-                
-                only = calc_averages(r, v, input_df, organic='only')
-                results_df = results_df.append(only, ignore_index=True)
-                
-                no = calc_averages(r, v, input_df, organic='no')
-                results_df = results_df.append(no, ignore_index=True)
+            input_df = update_data(r, v)
+            results_df = results_df.append(calc_averages(r, v, input_df), ignore_index=True)
+            print(results_df)
+            print(results_df.columns)
             path = JSON_DIR + r + '_'+ v + '.json'
             results_df.to_json(path)
                 
