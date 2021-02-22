@@ -12,6 +12,7 @@ Added code to perform calculations using the inflation-adjusted prices if desire
 
 #### Still todo: ####
 - Change to connect to firestore and dump the resulting json there
+- Add write/read rules to firestore (security)
 - Hang on to the json data from last week, just in case.
 - Optionally add a scrape for the newest CPI
 - Clean up the code a little bit to make it more readable
