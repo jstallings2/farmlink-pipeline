@@ -5,6 +5,10 @@ import numpy as np
 from datetime import datetime
 from datetime import timedelta
 from dateutil.relativedelta import relativedelta
+import firebase_admin
+from firebase_admin import credentials
+from firebase_admin import firestore
+import json
 
 DIR = "./concat_data/"
 JSON_DIR = "./json_data/"
@@ -220,9 +224,13 @@ def nearest_date(dates, targdate):
     return nearest, timedelta
 
 def adjust_inflation(data, coeffs):
+    most_recent = coeffs.iloc[-1]['CPIAUCNS']
     adjusted = data.reset_index().sort_values(by='Date')
     merged_df = pd.merge_asof(adjusted, coeffs, left_on='Date', right_on='DATE')
-    merged_df["IA Avg Price"] = (merged_df['Weighted Avg Price']/merged_df['CPIAUCNS'])*100
+    # Normalize CPI with most recent CPI being 1.0
+    coeffs['CPIAUCNS'] = coeffs['CPIAUCNS'].divide(most_recent)
+    
+    merged_df["IA Avg Price"] = (merged_df['Weighted Avg Price']/merged_df['CPIAUCNS'])
     merged_df = merged_df.set_index('Date')
     merged_df = merged_df.sort_index()
     print('Data with inflation index added:\n', merged_df.head())
@@ -235,19 +243,39 @@ def load_cpi_data():
     coeffs = coeffs.reset_index(drop=True)
     return coeffs
 
+def init_firestore():
+    project_id = 'farmlink-304820'
+    cred = credentials.ApplicationDefault()
+    firebase_admin.initialize_app(cred, {
+    'projectId': project_id,
+    })
+
+    return firestore.client()
+
 
 if __name__ == "__main__":
     coeffs = load_cpi_data()
+    db = init_firestore()
+
     for r in test_regions:
         for v in test_producenames:
             results_df = pd.DataFrame()
             input_df = update_data(r, v, test=True)
             adjusted_df = adjust_inflation(input_df, coeffs)
-            results_df = results_df.append(calc_averages(r, v, adjusted_df,adjusted=True), ignore_index=True)
-            print(results_df)
-            print(results_df.columns)
+            result = calc_averages(r, v, adjusted_df,adjusted=True)
+            print(result)
+            # Next three lines save a backup, for now
             path = JSON_DIR + r + '_'+ v + '.json'
-            results_df.to_json(path)
+            with open(path, 'w') as fp:
+                json.dump(result, fp)
+
+            try:
+                doc_ref = db.collection(u'farmlink_transactions').document(r)
+            except:
+                print("connecting to firestore failed for ", r)
+                
+            doc_ref.set(result)
+
                 
     
 
