@@ -1,1 +1,14 @@
-{"Date Added": "2021-02-28", "Region": "NORTHEAST+U.S.", "Commodity": "APPLES", "10yr_avg": 2.8797717813434724, "3mo_ago": 2.992422372858776, "1mo_ago": 2.9827586206896552, "pct_change (10yr)": 20.113567346928903, "pct_change (3mo)": 5.392645505298079, "pct_change (1mo)": 5.734104046242881, "price_today": 3.153793103448279, "10_yr asterisk": false, "adjusted": true}
+{
+    "Date Added": "2021-02-28",
+    "Region": "NORTHEAST+U.S.",
+    "Commodity": "APPLES",
+    "10yr_avg": 2.8797717813434724,
+    "3mo_ago": 2.992422372858776,
+    "1mo_ago": 2.9827586206896552,
+    "pct_change (10yr)": 20.113567346928903,
+    "pct_change (3mo)": 5.392645505298079,
+    "pct_change (1mo)": 5.734104046242881,
+    "price_today": 3.153793103448279,
+    "10_yr asterisk": false,
+    "adjusted": true
+}

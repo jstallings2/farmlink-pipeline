@@ -46,7 +46,7 @@ def update_data(regionname, producename, savedir='./concat_data/', test=False):
     return combined_df
 
 def fetch_data(producename, regionname):
-    """Given a region and produce item, fetches a year of data and MAKES A DATAFRAME OF IT.
+    """Given a region and produce item, fetches a week of data and MAKES A DATAFRAME OF IT.
     Skips any cities/items/year combos that have already been downloaded. Slightly hardened against 
     timeouts,etc. from the USDA server, which is a bit flaky.
     """
@@ -113,7 +113,7 @@ def pct_change(oldprice, newprice):
 def calc_averages(region, veg, df, adjusted=True):
     """
     Calculate the averages for a given region + veggie, organic, nonorganic, and all, and save 
-    as 3 rows in a dataframe (will change to connect to firebase as well)
+    as 3 a dictionary.
 
     Params:
         region: Region to caculate for
