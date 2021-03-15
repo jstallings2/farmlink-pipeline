@@ -136,7 +136,7 @@ def calc_averages(region, veg, df, adjusted=True):
     while not sum(df.index == today) > 0:
             today -= timedelta(days=1)
     if today != orig_today:
-        print("No new data for {} {}, using most recent price from {}".format(veg, region, str(today)))
+        print("No new data today for {} {}, using most recent price from {}".format(veg, region, str(today)))
     today_df = df.loc[today]
     price_today = np.mean(today_df['Weighted Avg Price'])
     print("Price today: $" + str(round(price_today,2)))
@@ -228,9 +228,6 @@ def nearest_date(dates, targdate):
 
 def adjust_inflation(data, coeffs):
     adjusted = data.sort_values(by='Date')
-    print(adjusted.head(30))
-    print(adjusted.tail())
-    print(coeffs.head())
     merged_df = pd.merge_asof(adjusted, coeffs, left_on='Date', right_on='DATE')
     # Normalize CPI with most recent CPI being 1.0
     
@@ -238,7 +235,6 @@ def adjust_inflation(data, coeffs):
     merged_df["IA Avg Price"] = (merged_df['Weighted Avg Price']/merged_df['CPIAUCNS'])
     merged_df = merged_df.set_index('Date')
     merged_df = merged_df.sort_index()
-    print('Data with inflation index added:\n', merged_df.head())
     return merged_df
 
 def load_cpi_data():
