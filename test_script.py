@@ -5,6 +5,10 @@ import numpy as np
 from datetime import datetime
 from datetime import timedelta
 from dateutil.relativedelta import relativedelta
+import firebase_admin
+from firebase_admin import credentials
+from firebase_admin import firestore
+import json
 
 DIR = "./concat_data/"
 JSON_DIR = "./json_data/"
@@ -42,39 +46,45 @@ def update_data(regionname, producename, savedir='./concat_data/', test=False):
     return combined_df
 
 def fetch_data(producename, regionname):
-    """Given a region and produce item, fetches a year of data and MAKES A DATAFRAME OF IT.
+    """Given a region and produce item, fetches a week of data and MAKES A DATAFRAME OF IT.
     Skips any cities/items/year combos that have already been downloaded. Slightly hardened against 
     timeouts,etc. from the USDA server, which is a bit flaky.
     """
     month, day, year = get_current_date()
+    scrape_year = yearsago(11).year
+    
 
-    url = 'https://www.marketnews.usda.gov/mnp/fv-report-retail?repType=&run=&portal=fv&locChoose=&commodityClass=&startIndex=1&type=retail&class=ALL&commodity='+str(producename)+'&region='+str(regionname)+'&organic=ALL&repDate='+str(month)+'%2F'+str(month)+'%2F'+str(year)+'&endDate=12%2F31%2F'+str(year)+'&compareLy=No&format=excel&rowDisplayMax=100000'
+    data = pd.DataFrame()
 
-    try:
-        r = requests.get(url, allow_redirects=True, timeout=300)
-        new_data = pd.read_html(r.content, header=0, parse_dates=True, index_col='Date')[0]
-        return new_data, True
-    except requests.exceptions.Timeout:
-        print('request timed out, trying again...')
+    while(scrape_year <= year):
+        print(scrape_year, year)
+
+        url = 'https://www.marketnews.usda.gov/mnp/fv-report-retail?repType=&run=&portal=fv&locChoose=&commodityClass=&startIndex=1&type=retail&class=ALL&commodity='+str(producename)+'&region='+str(regionname)+'&organic=ALL&repDate=01%2F01%2F'+str(scrape_year)+'&endDate=12%2F31%2F'+str(scrape_year)+'&compareLy=No&format=excel&rowDisplayMax=100000'
+
         try:
             r = requests.get(url, allow_redirects=True, timeout=300)
-            new_data = pd.read_html(r.content, header=0, parse_dates=True, index_col='Date')[0]
-            return new_data, True
+            new_data = pd.read_html(r.content, header=0, parse_dates=True)[0]
+            data = pd.concat([data, new_data], ignore_index=True)
         except requests.exceptions.Timeout:
-            print('request timed out again, exiting...')
-            return None, False
+            print('request timed out, trying again...')
+            try:
+                r = requests.get(url, allow_redirects=True, timeout=300)
+                new_data = pd.read_html(r.content, header=0, parse_dates=True)[0]
+                data = pd.concat([data, new_data], ignore_index=True)
+            except requests.exceptions.Timeout:
+                print('request timed out again, exiting...')
+                return None, False
+        scrape_year += 1
 
-def load_and_clean(region, veg, dir='./concat_data/'):
-    filepath = dir + region + "_" + veg + "_ALL.csv"
-    try:
-        df = pd.read_csv(filepath, parse_dates=True, index_col='Date')
-    except FileNotFoundError:
-        print("No data found for {} {}, skipping")
-        return None, False
+    data['Date'] = pd.to_datetime(data['Date'], infer_datetime_format=True)
+    print(data.dtypes)
+    return data, True
+
     
+def clean(df):
     #Drop null rows
-    if sum(df.index.isna() == True) > 0:
-        df.drop(df[df.index.isna() == True].index, inplace=True)
+    if sum(df['Date'].isna() == True) > 0:
+        df.drop(df[df['Date'].isna() == True].index, inplace=True)
     # Drop Unnamed column
     if 'Unnamed: 0' in df.columns:
         df.drop(['Unnamed: 0'], axis=1, inplace=True)
@@ -109,7 +119,7 @@ def pct_change(oldprice, newprice):
 def calc_averages(region, veg, df, adjusted=True):
     """
     Calculate the averages for a given region + veggie, organic, nonorganic, and all, and save 
-    as 3 rows in a dataframe (will change to connect to firebase as well)
+    as 3 a dictionary.
 
     Params:
         region: Region to caculate for
@@ -172,13 +182,11 @@ def calc_averages(region, veg, df, adjusted=True):
     while not sum(df.index == date_back_3mo) > 0:
         date_back_3mo -= timedelta(days=1)
     df_3mo = df[df.index == date_back_3mo]
-    print(df_3mo)
     # Get data from closest to exactly 1 month ago as possible
     date_back_1mo = monthsago(1, from_date=today)
     while not sum(df.index == date_back_1mo) > 0:
         date_back_1mo -= timedelta(days=1)
     df_1mo = df[df.index == date_back_1mo]
-    print(df_1mo)
 
     # Calculate 3mo and 1mo ago avg price
     final_3mo_avg = np.mean(df_3mo['Weighted Avg Price'])
@@ -208,7 +216,6 @@ def calc_averages(region, veg, df, adjusted=True):
     else:
         vals = [current_day.strftime('%Y-%m-%d'), region, veg, adj_final_10yr_avg, adj_final_3mo_avg, adj_final_1mo_avg, pct_change_10yr, pct_change_3mo, pct_change_1mo, adj_price_today, asterisk, True]
     results_dict = dict(zip(new_cols, vals))
-    print(results_dict)
     return results_dict
 
 def nearest_date(dates, targdate):
@@ -220,9 +227,15 @@ def nearest_date(dates, targdate):
     return nearest, timedelta
 
 def adjust_inflation(data, coeffs):
-    adjusted = data.reset_index().sort_values(by='Date')
+    adjusted = data.sort_values(by='Date')
+    print(adjusted.head(30))
+    print(adjusted.tail())
+    print(coeffs.head())
     merged_df = pd.merge_asof(adjusted, coeffs, left_on='Date', right_on='DATE')
-    merged_df["IA Avg Price"] = (merged_df['Weighted Avg Price']/merged_df['CPIAUCNS'])*100
+    # Normalize CPI with most recent CPI being 1.0
+    
+    
+    merged_df["IA Avg Price"] = (merged_df['Weighted Avg Price']/merged_df['CPIAUCNS'])
     merged_df = merged_df.set_index('Date')
     merged_df = merged_df.sort_index()
     print('Data with inflation index added:\n', merged_df.head())
@@ -235,19 +248,36 @@ def load_cpi_data():
     coeffs = coeffs.reset_index(drop=True)
     return coeffs
 
+def init_firestore():
+    project_id = 'farmlink-304820'
+    cred = credentials.ApplicationDefault()
+    firebase_admin.initialize_app(cred, {
+    'projectId': project_id,
+    })
+
+    return firestore.client()
+
 
 if __name__ == "__main__":
     coeffs = load_cpi_data()
+    # db = init_firestore()
+    most_recent = coeffs.iloc[-1]['CPIAUCNS']
+    coeffs['CPIAUCNS'] = coeffs['CPIAUCNS'].divide(most_recent)
+
     for r in test_regions:
+        data = {}
         for v in test_producenames:
             results_df = pd.DataFrame()
-            input_df = update_data(r, v, test=True)
+            input_df, status = fetch_data(v, r)
+            input_df, status = clean(input_df)
             adjusted_df = adjust_inflation(input_df, coeffs)
-            results_df = results_df.append(calc_averages(r, v, adjusted_df,adjusted=True), ignore_index=True)
-            print(results_df)
-            print(results_df.columns)
-            path = JSON_DIR + r + '_'+ v + '.json'
-            results_df.to_json(path)
+            result = calc_averages(r, v, adjusted_df,adjusted=True)
+            data[v] = result
+        # For local testing only: simulate dumping to Firestore
+        path = JSON_DIR + r + '.json'
+        with open(path, 'w') as fp:
+            json.dump(data, fp)
+
                 
     
 
