@@ -6,6 +6,9 @@ import json
 from datetime import datetime
 from datetime import timedelta
 from dateutil.relativedelta import relativedelta
+import firebase_admin
+from firebase_admin import credentials
+from firebase_admin import firestore
 
 DIR = "./concat_data/"
 JSON_DIR = "./json_data/"
@@ -13,14 +16,30 @@ test_regions = ['NORTHEAST+U.S.', 'SOUTHWEST+U.S.']
 test_producenames = ['CARROTS', 'APPLES']
 
 def get_current_date():
+    """
+    Gets the current date.
+    """
     today = datetime.now()
     return today.month, today.day, today.year
 
 def update_data(regionname, producename, savedir='./concat_data/', test=False):
     """
-    Performs the web scrape to grab the newest data for a given region and veggie,
+    Calls web scrape to grab the newest data for a given region and veggie,
     and combines it with the old data for that region & veggie and returns the
-    combined dataframe with data +11 years ago cut off, and also OVERWRITES the backup csv of the old data
+    combined dataframe with data +11 years ago cut off, and also OVERWRITES the backup csv of the old data.
+
+    Params:
+        regionname: The name of the region to be scraped (e.g. SOUTHWEST+U.S.)
+        producename: The name of the produce item to be scraped (e.g. APPLES)
+        savedir: relpath to save directory of the csv data. This works on cloud or on local repo.
+        test: If true, optionally skip scraping and just return the old csv data.
+
+    Calls:
+        load_and_clean()
+        fetch_data()
+
+    NOTE: It's recommended to make a local backup of the csv data before changing / testing this function.
+    Otherwise you risk overwriting data you can't get back.
     """
     if test:
         old_df = load_and_clean(regionname, producename)[0]
@@ -43,9 +62,20 @@ def update_data(regionname, producename, savedir='./concat_data/', test=False):
     return combined_df
 
 def fetch_data(producename, regionname):
-    """Given a region and produce item, fetches a year of data and MAKES A DATAFRAME OF IT.
-    Skips any cities/items/year combos that have already been downloaded. Slightly hardened against 
-    timeouts,etc. from the USDA server, which is a bit flaky.
+    """
+    Given a region and produce item, fetches the newest week of data and stores it in a DataFrame.
+    Slightly hardened against timeouts,etc. from the USDA server, which is a bit flaky.
+    
+    Params:
+        regionname: The name of the region to be scraped (e.g. SOUTHWEST+U.S.)
+        producename: The name of the produce item to be scraped (e.g. APPLES)
+
+    Returns:
+        0: The new dataframe made from this data, or NoneType if server timedout.
+        1: True if the execution was successful, otherwise False.
+
+    Calls:
+        get_current_date()
     """
     month, day, year = get_current_date()
 
@@ -66,6 +96,21 @@ def fetch_data(producename, regionname):
             return None, False
 
 def load_and_clean(region, veg, dir='./concat_data/'):
+    """
+    Load a csv of old data and wrangle into the right format for processing.
+    The data should end up in the same format as that returned by fetch_data().
+
+    Params:
+        region: The name of the region to be retrieved (e.g. SOUTHWEST+U.S.)
+        veg: The name of the produce item to be retrieved (e.g. APPLES)
+        dir: Relpath to the directory where the csv's are stored.
+
+    Returns:
+        0: The new dataframe made from this data, or NoneType if FileNotFoundError occurs.
+        1: True if the data was retrieved & execution was successful, otherwise False.
+    """
+
+
     filepath = dir + region + "_" + veg + "_ALL.csv"
     try:
         df = pd.read_csv(filepath, parse_dates=True, index_col='Date')
@@ -116,8 +161,10 @@ def calc_averages(region, veg, df, adjusted=True):
         region: Region to caculate for
         veg: Commodity to calculate for
         df: DataFrame to use for the calculations
+        adjusted: If true, adjust for inflation when calculating values.
+                Final values are reported in present-day dollars.
 
-    Return true on successful execution
+    Returns a dictionary of the values of interest on successful execution
     """
 
     # Get the data from today or most recent day with data
@@ -213,13 +260,18 @@ def calc_averages(region, veg, df, adjusted=True):
     return results_dict
 
 def nearest_date(dates, targdate):
-    # given a pd series of dates and a target date, returns date from the series closest to target date (and distance)
+    """
+    Given a pd series of dates and a target date, returns date from the series closest to target date (and distance)
+    """
     for i in dates:
         i = i.to_pydatetime()
     nearest = min(dates, key=lambda x: abs(x - targdate))
     timedelta = abs(nearest - targdate)
     return nearest, timedelta
 
+"""
+Add columns to the data with the prices adjusted for inflation in terms of present-day dollars.
+"""
 def adjust_inflation(data, coeffs):
     adjusted = data.sort_values(by='Date')
     merged_df = pd.merge_asof(adjusted, coeffs, left_on='Date', right_on='DATE')
@@ -232,7 +284,8 @@ def adjust_inflation(data, coeffs):
     return merged_df
 
 """
-Load CPI Data from a local csv, clean and adjust so everything is in 2021 dollars
+Load CPI Data from a local/CloudStorage csv, scrape new CPI if needed.
+Clean and adjust so everything is in present-day dollars
 """
 def load_cpi_data():
     coeffs = pd.read_csv('./CPI_DATA.csv')
@@ -243,20 +296,41 @@ def load_cpi_data():
     coeffs['CPIAUCNS'] = coeffs['CPIAUCNS'].divide(most_recent)
     return coeffs
 
+def init_firestore():
+    project_id = 'farmlink-304820'
+    cred = credentials.ApplicationDefault()
+    firebase_admin.initialize_app(cred, {
+    'projectId': project_id,
+    })
 
-if __name__ == "__main__":
+    return firestore.client()
+
+def farmlink_usda_scrape(event=None, context=None, test=False):
+    """
+    Entry point for the cloud function. In production, the default values for event and context should be
+    removed as these are used by PubSub / GCP
+    Also in production, JSON will not be saved, we will be pushing to Firestore.
+    """
     coeffs = load_cpi_data()
+    if not test:
+        db = init_firestore()
     for r in test_regions:
         data = {}
         for v in test_producenames:
-            results_df = pd.DataFrame()
             input_df = update_data(r, v, test=True)
             adjusted_df = adjust_inflation(input_df, coeffs)
             result = calc_averages(r, v, adjusted_df,adjusted=True)
             data[v] = result
-        path = JSON_DIR + r + '.json'
-        with open(path, 'w') as fp:
-            json.dump(data, fp)
+        if test:
+            path = JSON_DIR + r + '.json'
+            with open(path, 'w') as fp:
+                json.dump(data, fp)
+        else:
+            # TODO: Paste Firestore actions here
+
+if __name__ == "__main__":
+    farmlink_usda_scrape()
+    
                 
     
 
