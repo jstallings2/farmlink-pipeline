@@ -297,6 +297,7 @@ Load CPI Data from a local/CloudStorage csv, scrape new CPI if needed.
 Clean and adjust so everything is in present-day dollars
 """
 def load_cpi_data():
+    get_latest_cpi()
     coeffs = pd.read_csv('./CPI_DATA.csv')
     coeffs['DATE'] = pd.to_datetime(coeffs['DATE'])
     coeffs = coeffs.sort_values(by='DATE')
@@ -319,6 +320,29 @@ def init_storage():
     bucket_name = 'farmlink-304820.appspot.com'
     return bucket_name
 
+"""
+Scrape the latest CPI (All Urban Consumers) data from Fed St. Louis website
+"""
+def get_latest_cpi():
+    date = datetime.now().strftime('%Y-%m-%d')
+
+    url = 'https://fred.stlouisfed.org/graph/fredgraph.csv?bgcolor=%23e1e9f0&chart_type=line&drp=0&fo=open%20sans&graph_bgcolor=%23ffffff&height=450&mode=fred&recession_bars=on&txtcolor=%23444444&ts=12&tts=12&width=748&nt=0&thu=0&trc=0&show_legend=yes&show_axis_titles=yes&show_tooltip=yes&id=CPIAUCNS&scale=left&cosd=1913-01-01&coed='+date+'&line_color=%234572a7&link_values=false&line_style=solid&mark_type=none&mw=3&lw=2&ost=-99999&oet=99999&mma=0&fml=a&fq=Monthly&fam=avg&fgst=lin&fgsnd=2020-02-01&line_index=1&transformation=lin&vintage_date=2021-03-24&revision_date=2021-03-24&nd=1913-01-01'
+
+    try:
+        r = requests.get(url, allow_redirects=True, timeout=300)
+        open('./CPI_DATA.csv', 'wb').write(r.content)
+        return True
+    except requests.exceptions.Timeout:
+        print('request timed out, trying again...')
+        try:
+            r = requests.get(url, allow_redirects=True, timeout=300)
+            open('./CPI_DATA.csv', 'wb').write(r.content)
+            return True
+        except requests.exceptions.Timeout:
+            print('request timed out again, exiting...')
+            print('Error getting CPI, CPI from last run will be used')
+            return False
+
 def farmlink_usda_scrape(event=None, context=None, test=False):
     """
     Entry point for the cloud function. In production, the default values for event and context should be
@@ -329,6 +353,8 @@ def farmlink_usda_scrape(event=None, context=None, test=False):
     if not test:
         db = init_firestore()
         bucket = init_storage()
+    else:
+        bucket = None
     for r in test_regions:
         data = {}
         for v in test_producenames:
