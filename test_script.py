@@ -9,6 +9,7 @@ from dateutil.relativedelta import relativedelta
 import firebase_admin
 from firebase_admin import credentials
 from firebase_admin import firestore
+from google.cloud import storage
 
 DIR = "./concat_data/"
 JSON_DIR = "./json_data/"
@@ -22,7 +23,7 @@ def get_current_date():
     today = datetime.now()
     return today.month, today.day, today.year
 
-def update_data(regionname, producename, savedir='./concat_data/', test=False):
+def update_data(regionname, producename, savedir='/concat_data/', test=False, bucket=None):
     """
     Calls web scrape to grab the newest data for a given region and veggie,
     and combines it with the old data for that region & veggie and returns the
@@ -46,7 +47,7 @@ def update_data(regionname, producename, savedir='./concat_data/', test=False):
         return old_df
 
     new_df = fetch_data(producename, regionname)[0]
-    old_df = load_and_clean(regionname, producename)[0]
+    old_df = load_and_clean(regionname, producename, bucket=bucket)[0]
     print('Old data:\n', old_df.tail(5))
     print('New data:\n', new_df.head(5))
     combined_df = pd.concat([old_df, new_df], ignore_index=False)
@@ -56,6 +57,10 @@ def update_data(regionname, producename, savedir='./concat_data/', test=False):
 
     # Save combined_df
     filepath = savedir + str(regionname) + '_' + str(producename) + '_ALL.csv'
+    if bucket != None:
+        filepath = 'gs://'+ bucket + filepath
+    else:
+        filepath = '.' + filepath
     combined_df.to_csv(filepath)
 
     # Return combined_df
@@ -96,7 +101,7 @@ def fetch_data(producename, regionname):
             print('request timed out again, exiting...')
             return None, False
 
-def load_and_clean(region, veg, dir='./concat_data/'):
+def load_and_clean(region, veg, dir='/concat_data/', bucket=None):
     """
     Load a csv of old data and wrangle into the right format for processing.
     The data should end up in the same format as that returned by fetch_data().
@@ -111,12 +116,15 @@ def load_and_clean(region, veg, dir='./concat_data/'):
         1: True if the data was retrieved & execution was successful, otherwise False.
     """
 
-
-    filepath = dir + region + "_" + veg + "_ALL.csv"
+    filepath = dir + region + "_" + veg + "_ALL.csv" # local directory
     try:
+        if bucket != None:
+            filepath = 'gs://' + bucket + filepath
+        else:
+            filepath = '.' + filepath
         df = pd.read_csv(filepath, parse_dates=True, index_col='Date')
     except FileNotFoundError:
-        print("No data found for {} {}, skipping")
+        print("No data found for {} {}, skipping".format(region, veg))
         return None, False
     
     #Drop null rows
@@ -306,6 +314,11 @@ def init_firestore():
 
     return firestore.client()
 
+def init_storage():
+    client = storage.Client()
+    bucket_name = 'farmlink-304820.appspot.com'
+    return bucket_name
+
 def farmlink_usda_scrape(event=None, context=None, test=False):
     """
     Entry point for the cloud function. In production, the default values for event and context should be
@@ -315,10 +328,11 @@ def farmlink_usda_scrape(event=None, context=None, test=False):
     coeffs = load_cpi_data()
     if not test:
         db = init_firestore()
+        bucket = init_storage()
     for r in test_regions:
         data = {}
         for v in test_producenames:
-            input_df = update_data(r, v)
+            input_df = update_data(r, v, bucket=bucket)
             adjusted_df = adjust_inflation(input_df, coeffs)
             result = calc_averages(r, v, adjusted_df,adjusted=True)
             data[v] = result
@@ -327,8 +341,12 @@ def farmlink_usda_scrape(event=None, context=None, test=False):
             with open(path, 'w') as fp:
                 json.dump(data, fp)
         else:
-            pass
-            # TODO: Paste Firestore actions here
+            try:
+                doc_ref = db.collection(u'farmlink_transactions').document(r)
+            except:
+                print("connecting to firestore failed for ", r)
+            
+            doc_ref.set(data)
 
 if __name__ == "__main__":
     farmlink_usda_scrape(test=True)
