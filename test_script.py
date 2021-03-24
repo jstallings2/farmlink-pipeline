@@ -79,11 +79,12 @@ def fetch_data(producename, regionname):
     """
     month, day, year = get_current_date()
 
-    url = 'https://www.marketnews.usda.gov/mnp/fv-report-retail?repType=&run=&portal=fv&locChoose=&commodityClass=&startIndex=1&type=retail&class=ALL&commodity='+str(producename)+'&region='+str(regionname)+'&organic=ALL&repDate='+str(month)+'%2F'+str(month)+'%2F'+str(year)+'&endDate=12%2F31%2F'+str(year)+'&compareLy=No&format=excel&rowDisplayMax=100000'
+    url = 'https://www.marketnews.usda.gov/mnp/fv-report-retail?repType=&run=&portal=fv&locChoose=&commodityClass=&startIndex=1&type=retail&class=ALL&commodity='+str(producename)+'&region='+str(regionname)+'&organic=ALL&repDate='+str(month)+'%2F'+str(day)+'%2F'+str(year)+'&endDate=12%2F31%2F'+str(year)+'&compareLy=No&format=excel&rowDisplayMax=100000'
 
     try:
         r = requests.get(url, allow_redirects=True, timeout=300)
         new_data = pd.read_html(r.content, header=0, parse_dates=True, index_col='Date')[0]
+        print('scraped data: \n', new_data)
         return new_data, True
     except requests.exceptions.Timeout:
         print('request timed out, trying again...')
@@ -273,14 +274,14 @@ def nearest_date(dates, targdate):
 Add columns to the data with the prices adjusted for inflation in terms of present-day dollars.
 """
 def adjust_inflation(data, coeffs):
-    adjusted = data.sort_values(by='Date')
+    adjusted = data.reset_index().sort_values(by='Date')
     merged_df = pd.merge_asof(adjusted, coeffs, left_on='Date', right_on='DATE')
     # Normalize CPI with most recent CPI being 1.0
-    
     
     merged_df["IA Avg Price"] = (merged_df['Weighted Avg Price']/merged_df['CPIAUCNS'])
     merged_df = merged_df.set_index('Date')
     merged_df = merged_df.sort_index()
+    print(merged_df.info())
     return merged_df
 
 """
@@ -317,7 +318,7 @@ def farmlink_usda_scrape(event=None, context=None, test=False):
     for r in test_regions:
         data = {}
         for v in test_producenames:
-            input_df = update_data(r, v, test=True)
+            input_df = update_data(r, v)
             adjusted_df = adjust_inflation(input_df, coeffs)
             result = calc_averages(r, v, adjusted_df,adjusted=True)
             data[v] = result
@@ -326,10 +327,11 @@ def farmlink_usda_scrape(event=None, context=None, test=False):
             with open(path, 'w') as fp:
                 json.dump(data, fp)
         else:
+            pass
             # TODO: Paste Firestore actions here
 
 if __name__ == "__main__":
-    farmlink_usda_scrape()
+    farmlink_usda_scrape(test=True)
     
                 
     
