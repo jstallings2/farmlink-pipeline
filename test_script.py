@@ -2,9 +2,14 @@ import os
 import requests
 import pandas as pd 
 import numpy as np 
+import json
 from datetime import datetime
 from datetime import timedelta
 from dateutil.relativedelta import relativedelta
+import firebase_admin
+from firebase_admin import credentials
+from firebase_admin import firestore
+from google.cloud import storage
 
 DIR = "./concat_data/"
 JSON_DIR = "./json_data/"
@@ -12,21 +17,37 @@ test_regions = ['NORTHEAST+U.S.', 'SOUTHWEST+U.S.']
 test_producenames = ['CARROTS', 'APPLES']
 
 def get_current_date():
+    """
+    Gets the current date.
+    """
     today = datetime.now()
     return today.month, today.day, today.year
 
-def update_data(regionname, producename, savedir='./concat_data/', test=False):
+def update_data(regionname, producename, savedir='/concat_data/', test=False, bucket=None):
     """
-    Performs the web scrape to grab the newest data for a given region and veggie,
+    Calls web scrape to grab the newest data for a given region and veggie,
     and combines it with the old data for that region & veggie and returns the
-    combined dataframe with data +11 years ago cut off, and also OVERWRITES the backup csv of the old data
+    combined dataframe with data +11 years ago cut off, and also OVERWRITES the backup csv of the old data.
+
+    Params:
+        regionname: The name of the region to be scraped (e.g. SOUTHWEST+U.S.)
+        producename: The name of the produce item to be scraped (e.g. APPLES)
+        savedir: relpath to save directory of the csv data. This works on cloud or on local repo.
+        test: If true, optionally skip scraping and just return the old csv data.
+
+    Calls:
+        load_and_clean()
+        fetch_data()
+
+    NOTE: It's recommended to make a local backup of the csv data before changing / testing this function.
+    Otherwise you risk overwriting data you can't get back.
     """
     if test:
         old_df = load_and_clean(regionname, producename)[0]
         return old_df
 
     new_df = fetch_data(producename, regionname)[0]
-    old_df = load_and_clean(regionname, producename)[0]
+    old_df = load_and_clean(regionname, producename, bucket=bucket)[0]
     print('Old data:\n', old_df.tail(5))
     print('New data:\n', new_df.head(5))
     combined_df = pd.concat([old_df, new_df], ignore_index=False)
@@ -36,23 +57,39 @@ def update_data(regionname, producename, savedir='./concat_data/', test=False):
 
     # Save combined_df
     filepath = savedir + str(regionname) + '_' + str(producename) + '_ALL.csv'
+    if bucket != None:
+        filepath = 'gs://'+ bucket + filepath
+    else:
+        filepath = '.' + filepath
     combined_df.to_csv(filepath)
 
     # Return combined_df
     return combined_df
 
 def fetch_data(producename, regionname):
-    """Given a region and produce item, fetches a year of data and MAKES A DATAFRAME OF IT.
-    Skips any cities/items/year combos that have already been downloaded. Slightly hardened against 
-    timeouts,etc. from the USDA server, which is a bit flaky.
+    """
+    Given a region and produce item, fetches the newest week of data and stores it in a DataFrame.
+    Slightly hardened against timeouts,etc. from the USDA server, which is a bit flaky.
+    
+    Params:
+        regionname: The name of the region to be scraped (e.g. SOUTHWEST+U.S.)
+        producename: The name of the produce item to be scraped (e.g. APPLES)
+
+    Returns:
+        0: The new dataframe made from this data, or NoneType if server timedout.
+        1: True if the execution was successful, otherwise False.
+
+    Calls:
+        get_current_date()
     """
     month, day, year = get_current_date()
 
-    url = 'https://www.marketnews.usda.gov/mnp/fv-report-retail?repType=&run=&portal=fv&locChoose=&commodityClass=&startIndex=1&type=retail&class=ALL&commodity='+str(producename)+'&region='+str(regionname)+'&organic=ALL&repDate='+str(month)+'%2F'+str(month)+'%2F'+str(year)+'&endDate=12%2F31%2F'+str(year)+'&compareLy=No&format=excel&rowDisplayMax=100000'
+    url = 'https://www.marketnews.usda.gov/mnp/fv-report-retail?repType=&run=&portal=fv&locChoose=&commodityClass=&startIndex=1&type=retail&class=ALL&commodity='+str(producename)+'&region='+str(regionname)+'&organic=ALL&repDate='+str(month)+'%2F'+str(day)+'%2F'+str(year)+'&endDate=12%2F31%2F'+str(year)+'&compareLy=No&format=excel&rowDisplayMax=100000'
 
     try:
         r = requests.get(url, allow_redirects=True, timeout=300)
         new_data = pd.read_html(r.content, header=0, parse_dates=True, index_col='Date')[0]
+        print('scraped data: \n', new_data)
         return new_data, True
     except requests.exceptions.Timeout:
         print('request timed out, trying again...')
@@ -64,12 +101,30 @@ def fetch_data(producename, regionname):
             print('request timed out again, exiting...')
             return None, False
 
-def load_and_clean(region, veg, dir='./concat_data/'):
-    filepath = dir + region + "_" + veg + "_ALL.csv"
+def load_and_clean(region, veg, dir='/concat_data/', bucket=None):
+    """
+    Load a csv of old data and wrangle into the right format for processing.
+    The data should end up in the same format as that returned by fetch_data().
+
+    Params:
+        region: The name of the region to be retrieved (e.g. SOUTHWEST+U.S.)
+        veg: The name of the produce item to be retrieved (e.g. APPLES)
+        dir: Relpath to the directory where the csv's are stored.
+
+    Returns:
+        0: The new dataframe made from this data, or NoneType if FileNotFoundError occurs.
+        1: True if the data was retrieved & execution was successful, otherwise False.
+    """
+
+    filepath = dir + region + "_" + veg + "_ALL.csv" # local directory
     try:
+        if bucket != None:
+            filepath = 'gs://' + bucket + filepath
+        else:
+            filepath = '.' + filepath
         df = pd.read_csv(filepath, parse_dates=True, index_col='Date')
     except FileNotFoundError:
-        print("No data found for {} {}, skipping")
+        print("No data found for {} {}, skipping".format(region, veg))
         return None, False
     
     #Drop null rows
@@ -115,8 +170,10 @@ def calc_averages(region, veg, df, adjusted=True):
         region: Region to caculate for
         veg: Commodity to calculate for
         df: DataFrame to use for the calculations
+        adjusted: If true, adjust for inflation when calculating values.
+                Final values are reported in present-day dollars.
 
-    Return true on successful execution
+    Returns a dictionary of the values of interest on successful execution
     """
 
     # Get the data from today or most recent day with data
@@ -212,42 +269,88 @@ def calc_averages(region, veg, df, adjusted=True):
     return results_dict
 
 def nearest_date(dates, targdate):
-    # given a pd series of dates and a target date, returns date from the series closest to target date (and distance)
+    """
+    Given a pd series of dates and a target date, returns date from the series closest to target date (and distance)
+    """
     for i in dates:
         i = i.to_pydatetime()
     nearest = min(dates, key=lambda x: abs(x - targdate))
     timedelta = abs(nearest - targdate)
     return nearest, timedelta
 
+"""
+Add columns to the data with the prices adjusted for inflation in terms of present-day dollars.
+"""
 def adjust_inflation(data, coeffs):
     adjusted = data.reset_index().sort_values(by='Date')
     merged_df = pd.merge_asof(adjusted, coeffs, left_on='Date', right_on='DATE')
-    merged_df["IA Avg Price"] = (merged_df['Weighted Avg Price']/merged_df['CPIAUCNS'])*100
+    # Normalize CPI with most recent CPI being 1.0
+    
+    merged_df["IA Avg Price"] = (merged_df['Weighted Avg Price']/merged_df['CPIAUCNS'])
     merged_df = merged_df.set_index('Date')
     merged_df = merged_df.sort_index()
-    print('Data with inflation index added:\n', merged_df.head())
+    print(merged_df.info())
     return merged_df
 
+"""
+Load CPI Data from a local/CloudStorage csv, scrape new CPI if needed.
+Clean and adjust so everything is in present-day dollars
+"""
 def load_cpi_data():
     coeffs = pd.read_csv('./CPI_DATA.csv')
     coeffs['DATE'] = pd.to_datetime(coeffs['DATE'])
     coeffs = coeffs.sort_values(by='DATE')
     coeffs = coeffs.reset_index(drop=True)
+    most_recent = coeffs.iloc[-1]['CPIAUCNS']
+    coeffs['CPIAUCNS'] = coeffs['CPIAUCNS'].divide(most_recent)
     return coeffs
 
+def init_firestore():
+    project_id = 'farmlink-304820'
+    cred = credentials.ApplicationDefault()
+    firebase_admin.initialize_app(cred, {
+    'projectId': project_id,
+    })
+
+    return firestore.client()
+
+def init_storage():
+    client = storage.Client()
+    bucket_name = 'farmlink-304820.appspot.com'
+    return bucket_name
+
+def farmlink_usda_scrape(event=None, context=None, test=False):
+    """
+    Entry point for the cloud function. In production, the default values for event and context should be
+    removed as these are used by PubSub / GCP
+    Also in production, JSON will not be saved, we will be pushing to Firestore.
+    """
+    coeffs = load_cpi_data()
+    if not test:
+        db = init_firestore()
+        bucket = init_storage()
+    for r in test_regions:
+        data = {}
+        for v in test_producenames:
+            input_df = update_data(r, v, bucket=bucket)
+            adjusted_df = adjust_inflation(input_df, coeffs)
+            result = calc_averages(r, v, adjusted_df,adjusted=True)
+            data[v] = result
+        if test:
+            path = JSON_DIR + r + '.json'
+            with open(path, 'w') as fp:
+                json.dump(data, fp)
+        else:
+            try:
+                doc_ref = db.collection(u'farmlink_transactions').document(r)
+            except:
+                print("connecting to firestore failed for ", r)
+            
+            doc_ref.set(data)
 
 if __name__ == "__main__":
-    coeffs = load_cpi_data()
-    for r in test_regions:
-        for v in test_producenames:
-            results_df = pd.DataFrame()
-            input_df = update_data(r, v, test=True)
-            adjusted_df = adjust_inflation(input_df, coeffs)
-            results_df = results_df.append(calc_averages(r, v, adjusted_df,adjusted=True), ignore_index=True)
-            print(results_df)
-            print(results_df.columns)
-            path = JSON_DIR + r + '_'+ v + '.json'
-            results_df.to_json(path)
+    farmlink_usda_scrape(test=True)
+    
                 
     
 
